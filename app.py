@@ -6,6 +6,18 @@ st.set_page_config(layout="wide")
 st.title("Algonquin Gas Pipeline Notices")
 
 df = scrape_notices.get_notices_df()
+st.set_page_config(layout="wide")
+st.title("Algonquin Gas Pipeline Notices")
+
+df = scrape_notices.get_notices_df()
+
+# ✅ Add this early safety check
+if df.empty:
+    st.warning("No data available. Please try again later or check the source.")
+    st.stop()
+
+# Now safe to proceed
+notice_types = df["Type"].dropna().unique().tolist()
 # Create a dropdown to filter by Type
 notice_types = df["Type"].dropna().unique().tolist() #Gets list of all unique notrice types from dataframe
 notice_types.sort()
