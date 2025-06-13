@@ -1,3 +1,4 @@
+st.set_page_config(layout="wide")
 import streamlit as st
 import scrape_notices  # Make sure this matches the filename of your scraper script
 import pandas as pd
