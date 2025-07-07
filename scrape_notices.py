@@ -1,11 +1,12 @@
-#Import Requests
+# === 1. Imports ===
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
-from db_utils import initialize_db, store_notice
 import sqlite3
-#Constants
+from db_utils import initialize_db, store_notice
+
+# === 2. Constants ===
 base_url = "https://infopost.enbridge.com/infopost/"
 list_url = base_url + "NoticesList.asp"
 params = {
@@ -15,13 +16,10 @@ params = {
 headers = {
     "User-Agent": "Mozilla/5.0"
 }
-#Normalize capacity constraint and ofo
-def classify_notice_type(raw_type):
-    """
-    Normalizes and categorizes the notice type.
-    """
-    raw = raw_type.strip().lower()
 
+# === 3. Utility: Classify Notice Type ===
+def classify_notice_type(raw_type):
+    raw = raw_type.strip().lower()
     if "capacity constraint" in raw:
         return "Capacity Constraint"
     elif "operational flow order" in raw or "ofo" in raw:
@@ -29,91 +27,93 @@ def classify_notice_type(raw_type):
     else:
         return "Other"
 
-
-#Exctract notice insights
+# === 4. Parsing Dispatcher ===
 def extract_notice_insights(text, notice_type, notice_date=None):
-    """
-    Extracts:
-      - Gas Day
-      - No-Notice %
-      - OFO Start and End if present
-    """
     if not text:
         return None, None, None, None, False, None
 
-    notice_type = notice_type.lower().strip()
+    notice_type = notice_type.lower()
+
+    if "operational flow order" in notice_type or "ofo" in notice_type:
+        return parse_ofo_notice(text, notice_date)
+
+    elif "capacity constraint" in notice_type:
+        return parse_capacity_notice(text)
+
+    else:
+        return None, None, None, None, False, None
+
+# === 5. Notice Type Parsers ===
+def parse_capacity_notice(text):
     gas_day = None
     no_notice_pct = None
+
+    gas_day_match = re.search(r"For Gas Day (.+?)(?:,|\n)", text)
+    if gas_day_match:
+        gas_day = gas_day_match.group(1).strip()
+
+    no_notice_match = re.search(
+        r"limited to approximately (\d+%) of their no-notice", text)
+    if no_notice_match:
+        no_notice_pct = no_notice_match.group(1)
+
+    return gas_day, no_notice_pct, None, None, False, None
+
+def parse_ofo_notice(text, notice_date=None):
+    gas_day = None
     ofo_start = None
     ofo_end = None
     is_lifted = False
-    lifted_date_ref = None
+    lift_ref_date = None
 
-    if "capacity constraint" in notice_type:
-        gas_day_match = re.search(r"For Gas Day (.+?)(?:,|\n)", text)
-        if gas_day_match:
-            gas_day = gas_day_match.group(1).strip()
+    gas_day_matches = re.findall(
+        r"Gas Day (?:January|February|March|April|May|June|July|August|September|October|November|December) ?\d{1,2}(?: - (?:January|February|March|April|May|June|July|August|September|October|November|December)? ?\d{1,2})?",
+        text
+    )
+    if gas_day_matches:
+        gas_day = "; ".join(gas_day_matches)
+        if "until further notice" in text.lower():
+            gas_day += " (Until Further Notice)"
 
-    elif "operational flow order" in notice_type or "ofo" in notice_type:
-        # Gas Day matches
-        gas_day_matches = re.findall(
-            r"Gas Day (?:January|February|March|April|May|June|July|August|September|October|November|December) ?\d{1,2}(?: - (?:January|February|March|April|May|June|July|August|September|October|November|December)? ?\d{1,2})?",
-            text
+    ofo_start_match = re.search(
+        r"effective (\d{1,2}:\d{2} (?:AM|PM) CCT, .*?\d{4})", text, re.IGNORECASE)
+    if ofo_start_match:
+        ofo_start = ofo_start_match.group(1).strip()
+
+    ofo_end_match = re.search(
+        r"remain in effect until (\d{1,2}:\d{2} (?:AM|PM) CCT, .*?\d{4})", text, re.IGNORECASE)
+    if ofo_end_match:
+        ofo_end = ofo_end_match.group(1).strip()
+
+    if "lifting the operational flow order" in text.lower():
+        is_lifted = True
+        lift_date_match = re.search(r"issued on (\w+ \d{1,2}, \d{4})", text)
+        if lift_date_match:
+            lift_ref_date = lift_date_match.group(1).strip()
+
+        lift_eff_match = re.search(
+            r"Effective (?:immediately|on )?(?:at )?(\w+ \d{1,2}, \d{4})",
+            text, re.IGNORECASE
         )
-        if gas_day_matches:
-            gas_day = "; ".join(gas_day_matches)
-            if "until further notice" in text.lower():
-                gas_day += " (Until Further Notice)"
+        if lift_eff_match:
+            ofo_end = lift_eff_match.group(1).strip()
+        elif "effective immediately" in text.lower() and notice_date:
+            ofo_end = notice_date
 
-        # OFO start
-        ofo_start_match = re.search(
-            r"effective (\d{1,2}:\d{2} (?:AM|PM) CCT, .*?\d{4})", text, re.IGNORECASE)
-        if ofo_start_match:
-            ofo_start = ofo_start_match.group(1).strip()
+    return gas_day, None, ofo_start, ofo_end, is_lifted, lift_ref_date
 
-        # OFO end
-        ofo_end_match = re.search(
-            r"remain in effect until (\d{1,2}:\d{2} (?:AM|PM) CCT, .*?\d{4})", text, re.IGNORECASE)
-        if ofo_end_match:
-            ofo_end = ofo_end_match.group(1).strip()
-
-        # Check for lift
-        if "lifting the operational flow order" in text.lower():
-            is_lifted = True
-            lifted_date_match = re.search(r"issued on (\w+ \d{1,2}, \d{4})", text)
-            if lifted_date_match:
-                lifted_date_ref = lifted_date_match.group(1).strip()
-
-            # Try to match OFO end date from lift notice
-            lift_date_match = re.search(
-                r"Effective (?:immediately|on )?(?:at )?(\w+ \d{1,2}, \d{4})",
-                text,
-                re.IGNORECASE
-            )
-            if lift_date_match:
-                ofo_end = lift_date_match.group(1).strip()
-            elif "effective immediately" in text.lower() and notice_date:
-                ofo_end = notice_date
-
-    # Extract no-notice %
-    no_notice_match = re.search(
-        r"limited to approximately (\d+%) of their no-notice", text)
-    no_notice_pct = no_notice_match.group(1) if no_notice_match else None
-
-    return gas_day, no_notice_pct, ofo_start, ofo_end, is_lifted, lifted_date_ref
-
-#Get-Notices Scraping Engine
+# === 6. Core Scraping Logic ===
 def get_notices_df(limit=None):
     response = requests.get(list_url, params=params, headers=headers)
     if not response.ok:
-        print(f"❌ Request failed with status code {response.status_code}")
+        print(f"\u274c Request failed with status code {response.status_code}")
         return pd.DataFrame()
 
-    print("✅ Request succeeded!")
+    print("\u2705 Request succeeded!")
     soup = BeautifulSoup(response.text, "html.parser")
     table = soup.find("table")
     if not table:
-        print("❌ No table found on the page.")
+        print("\u274c No table found on the page.")
         return pd.DataFrame()
 
     rows = table.find_all("tr")
@@ -146,6 +146,10 @@ def get_notices_df(limit=None):
 
         gas_day, no_notice_pct, ofo_start, ofo_end, is_lifted, lifted_date_ref = extract_notice_insights(notice_text, notice_type, date)
 
+        # Optional debug log
+        if notice_type != "Other" and not any([gas_day, no_notice_pct, ofo_start, ofo_end]):
+            print(f"\u26a0\ufe0f Parsing failed: {subject}")
+
         notices.append({
             "Type": notice_type,
             "Date": date,
@@ -166,19 +170,20 @@ def get_notices_df(limit=None):
 
     return pd.DataFrame(notices)
 
-if __name__ == "__main__":
-    df = get_notices_df()
-    pd.set_option('display.max_colwidth', None)
-    print("\n✅ Final Parsed Output:")
-    print(df.head())
-
- #NEW: Initialize database and store each notice
-    initialize_db()
-    for row in df.to_dict(orient='records'):
-        store_notice(row)
-
+# === 7. Read from DB ===
 def get_notices_from_db(db_path='notices.db'):
     conn = sqlite3.connect(db_path)
     df = pd.read_sql_query("SELECT * FROM notices ORDER BY date DESC", conn)
     conn.close()
     return df
+
+# === 8. Main Execution Block ===
+if __name__ == "__main__":
+    df = get_notices_df()
+    pd.set_option('display.max_colwidth', None)
+    print("\n\u2705 Final Parsed Output:")
+    print(df.head())
+
+    initialize_db()
+    for row in df.to_dict(orient='records'):
+        store_notice(row)
