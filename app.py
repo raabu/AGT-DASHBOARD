@@ -6,12 +6,36 @@ import pandas as pd
 st.set_page_config(layout="wide")
 st.title("Algonquin Gas Pipeline Notices")
 
-# Load data
-df = scrape_notices.get_notices_df()
+# Load data from the SQLite DB instead of scraping live
+df = scrape_notices.get_notices_from_db()
+df.rename(columns={
+    "type": "Type",
+    "date": "Date",
+    "notice_number": "Notice Number",
+    "subject": "Subject",
+    "detail_link": "Detail Link",
+    "full_notice": "Full Notice",
+    "gas_day": "Gas Day",
+    "no_notice_pct": "No-Notice %",
+    "ofo_start": "OFO Start",
+    "ofo_end": "OFO End",
+    "ofo_lifted": "OFO Lifted",
+    "ofo_lift_ref_date": "OFO Lift Ref Date"
+}, inplace=True)
+
+# Ensure all expected columns exist — fill with None if missing
+required_cols = [
+    "Status", "Type", "Date", "Notice Number", "Subject",
+    "Gas Day", "OFO Start", "OFO End", "No-Notice %",
+    "OFO Lift Ref Date"
+]
+for col in required_cols:
+    if col not in df.columns:
+        df[col] = None
 
 # ✅ Safety check: prevent crash if nothing is returned
 if df.empty:
-    st.warning("No data available. Please try again later or check the source.")
+    st.warning("No data available. Please run the scraper or check the source.")
     st.stop()
 
 # Dropdown setup

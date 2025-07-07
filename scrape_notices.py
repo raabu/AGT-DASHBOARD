@@ -1,8 +1,11 @@
+#Import Requests
 import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import re
-
+from db_utils import initialize_db, store_notice
+import sqlite3
+#Constants
 base_url = "https://infopost.enbridge.com/infopost/"
 list_url = base_url + "NoticesList.asp"
 params = {
@@ -12,7 +15,7 @@ params = {
 headers = {
     "User-Agent": "Mozilla/5.0"
 }
-
+#Normalize capacity constraint and ofo
 def classify_notice_type(raw_type):
     """
     Normalizes and categorizes the notice type.
@@ -26,6 +29,8 @@ def classify_notice_type(raw_type):
     else:
         return "Other"
 
+
+#Exctract notice insights
 def extract_notice_insights(text, notice_type, notice_date=None):
     """
     Extracts:
@@ -97,7 +102,8 @@ def extract_notice_insights(text, notice_type, notice_date=None):
 
     return gas_day, no_notice_pct, ofo_start, ofo_end, is_lifted, lifted_date_ref
 
-def get_notices_df(limit=25):
+#Get-Notices Scraping Engine
+def get_notices_df(limit=None):
     response = requests.get(list_url, params=params, headers=headers)
     if not response.ok:
         print(f"❌ Request failed with status code {response.status_code}")
@@ -155,13 +161,24 @@ def get_notices_df(limit=25):
             "OFO Lift Ref Date": lifted_date_ref,
         })
 
-        if len(notices) >= limit:
+        if limit and len(notices) >= limit:
             break
 
     return pd.DataFrame(notices)
 
 if __name__ == "__main__":
-    df = get_notices_df(5)
+    df = get_notices_df()
     pd.set_option('display.max_colwidth', None)
     print("\n✅ Final Parsed Output:")
     print(df.head())
+
+ #NEW: Initialize database and store each notice
+    initialize_db()
+    for row in df.to_dict(orient='records'):
+        store_notice(row)
+
+def get_notices_from_db(db_path='notices.db'):
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query("SELECT * FROM notices ORDER BY date DESC", conn)
+    conn.close()
+    return df
