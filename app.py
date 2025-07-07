@@ -98,3 +98,4 @@ st.text_area("Full Notice Text", notice["Full Notice"], height=400)
 
 # === 8. Footer ===
 st.caption(f"🔢 Loaded {len(df)} notices from the database.")
+st.caption("🚧 LIVE VERSION - Column logic implemented")
