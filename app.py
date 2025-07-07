@@ -82,3 +82,5 @@ st.markdown(f"**Gas Day:** {notice['Gas Day']}")
 st.markdown(f"**No-Notice Restriction:** {notice['No-Notice %']}")
 st.markdown(f"**Link:** [Open Full Notice]({notice['Detail Link']})")
 st.text_area("Full Notice Text", notice["Full Notice"], height=400)
+
+st.caption(f"🔢 Loaded {len(df)} notices from the database.")
