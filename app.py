@@ -50,18 +50,26 @@ selected_type = st.selectbox("Filter by Notice Type", notice_types)
 if selected_type != "All":
     df = df[df["Type"] == selected_type]
 
-# === 5. Status Badge Logic ===
-def format_status(row):
-    if row["Type"] == "Operational Flow Order":
-        if row["OFO Lifted"]:
-            return "🟢 Lifted"
-        elif pd.notna(row["OFO End"]):
-            return "🔴 Active"
-        else:
-            return "⚪ Pending"
-    return "—"
+# === 5. Determine Columns to Show Based on Type ===
 
-df["Status"] = df.apply(format_status, axis=1)
+if selected_type == "Operational Flow Order":
+    cols_to_show = [
+        "Status", "Type", "Date", "Notice Number", "Subject",
+        "Gas Day", "OFO Start", "OFO End", "OFO Lift Ref Date"
+    ]
+
+elif selected_type == "Capacity Constraint":
+    cols_to_show = [
+        "Status", "Type", "Date", "Notice Number", "Subject",
+        "Gas Day", "No-Notice %"
+    ]
+
+else:
+    # Default columns for 'All' or unclassified notice types
+    cols_to_show = [
+        "Status", "Type", "Date", "Notice Number", "Subject",
+        "Gas Day", "OFO Start", "OFO End", "No-Notice %", "OFO Lift Ref Date"
+    ]
 
 # === 6. Main Table Display ===
 cols_to_show = [
