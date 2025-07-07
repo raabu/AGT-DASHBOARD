@@ -70,12 +70,7 @@ else:
         "Status", "Type", "Date", "Notice Number", "Subject",
         "Gas Day", "OFO Start", "OFO End", "No-Notice %", "OFO Lift Ref Date"
     ]
-
-# === 6. Main Table Display ===
-cols_to_show = [
-    "Status", "Type", "Date", "Notice Number", "Subject",
-    "Gas Day", "OFO Start", "OFO End", "No-Notice %", "OFO Lift Ref Date"
-]
+# === 6. Main Table Display ====
 st.dataframe(df[cols_to_show], use_container_width=True)
 
 # === 7. Detailed Notice Viewer ===
