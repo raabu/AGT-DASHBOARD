@@ -96,6 +96,42 @@ st.markdown(f"**No-Notice Restriction:** {notice['No-Notice %']}")
 st.markdown(f"**Link:** [Open Full Notice]({notice['Detail Link']})")
 st.text_area("Full Notice Text", notice["Full Notice"], height=400)
 
+
+import sqlite3
+
+st.markdown("---")
+st.subheader("🔍 Restriction Table QA Viewer")
+
+# Step 1: Load restriction data
+@st.cache_data
+def load_restrictions():
+    conn = sqlite3.connect("notices.db")
+    df = pd.read_sql_query("SELECT * FROM restrictions", conn)
+    conn.close()
+    return df
+
+restrictions_df = load_restrictions()
+
+# Step 2: Dropdown of unique notice numbers
+unique_notices = restrictions_df["notice_number"].dropna().unique().tolist()
+selected_notice = st.selectbox("Select Notice Number", unique_notices)
+
+# Step 3: Filter table
+filtered = restrictions_df[restrictions_df["notice_number"] == selected_notice]
+
+# Step 4: Link to Enbridge full notice
+link_base = "https://infopost.enbridge.com/infopost/NoticeListDetail.asp"
+try:
+    matching_row = df[df["Notice Number"] == selected_notice].iloc[0]
+    link_url = matching_row["Detail Link"]
+    st.markdown(f"[🔗 View Full Notice on Enbridge]({link_url})")
+except IndexError:
+    st.warning("Notice link not found in main dataset.")
+
+# Step 5: Show restriction rows
+st.dataframe(filtered[["location", "priority_restrictions"]], use_container_width=True)
+
+
 # === 8. Footer ===
 st.caption(f"🔢 Loaded {len(df)} notices from the database.")
 st.caption("🚧 LIVE VERSION - Column logic implemented")

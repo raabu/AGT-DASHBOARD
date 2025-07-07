@@ -30,34 +30,95 @@ def classify_notice_type(raw_type):
 # === 4. Parsing Dispatcher ===
 def extract_notice_insights(text, notice_type, notice_date=None):
     if not text:
-        return None, None, None, None, False, None
+        # Always return 7 values, even if text is missing
+        return None, None, None, None, False, None, []
 
     notice_type = notice_type.lower()
 
     if "operational flow order" in notice_type or "ofo" in notice_type:
-        return parse_ofo_notice(text, notice_date)
+        # Return the normal 6 OFO values, plus an empty list for restrictions
+        return (*parse_ofo_notice(text, notice_date), [])
 
     elif "capacity constraint" in notice_type:
+        # This now returns all 7 values including restriction_data
         return parse_capacity_notice(text)
 
     else:
-        return None, None, None, None, False, None
+        # Unknown notice type — return 7 values of safe defaults
+        return None, None, None, None, False, None, []
 
 # === 5. Notice Type Parsers ===
 def parse_capacity_notice(text):
+    """
+    Parses Capacity Constraint notices for Gas Day, No-Notice %, and Restrictions.
+    """
     gas_day = None
     no_notice_pct = None
 
+    # Extract gas day
     gas_day_match = re.search(r"For Gas Day (.+?)(?:,|\n)", text)
     if gas_day_match:
         gas_day = gas_day_match.group(1).strip()
 
+    # Extract no-notice %
     no_notice_match = re.search(
         r"limited to approximately (\d+%) of their no-notice", text)
     if no_notice_match:
         no_notice_pct = no_notice_match.group(1)
 
-    return gas_day, no_notice_pct, None, None, False, None
+    # NEW: Parse the restrictions table
+    restriction_data = parse_restriction_table(text)
+
+    return gas_day, no_notice_pct, None, None, False, None, restriction_data
+
+def parse_restriction_table(text):
+    """
+    Parses the 'Restricted Locations' table from Capacity Constraint notices.
+    Returns a list of dictionaries, each containing a location and any extracted priority restrictions.
+    """
+    # Start by finding the table header section
+    header_pattern = r"Restricted Locations\s+Scheduled and Sealed\s+Priority % Restricted\s+Notes"
+    match = re.search(header_pattern, text, re.IGNORECASE)
+
+    if not match:
+        return None  # No table found
+
+    lines = text[match.end():].strip().splitlines()
+
+    restrictions = []
+    current_location = None
+    priorities = []
+
+    for line in lines:
+        line = line.strip()
+
+        # End of the table is usually marked by a blank line or switch in topic
+        if not line or line.startswith("No-Notice Restrictions") or "FERC" in line or "Systemwide" in line:
+            break
+
+        # If line looks like a location row (starts with letters, not %s or numbers)
+        if re.match(r"^[A-Za-z].*", line):
+            if current_location:
+                restrictions.append({
+                    "location": current_location,
+                    "priority_restrictions": priorities
+                })
+            current_location = line
+            priorities = []
+        else:
+            # Assume it's a priority % value or a continuation
+            if "%" in line:
+                priorities.append(line)
+
+    # Final push for last row
+    if current_location:
+        restrictions.append({
+            "location": current_location,
+            "priority_restrictions": priorities
+        })
+
+    return restrictions if restrictions else None
+
 
 def parse_ofo_notice(text, notice_date=None):
     gas_day = None
@@ -104,32 +165,36 @@ def parse_ofo_notice(text, notice_date=None):
 
 # === 6. Core Scraping Logic ===
 def get_notices_df(limit=None):
+    # === A. Request the Notices Table ===
     response = requests.get(list_url, params=params, headers=headers)
     if not response.ok:
-        print(f"\u274c Request failed with status code {response.status_code}")
-        return pd.DataFrame()
+        print(f"❌ Request failed with status code {response.status_code}")
+        return pd.DataFrame()  # Error Handling: network failure
 
-    print("\u2705 Request succeeded!")
+    print("✅ Request succeeded!")
     soup = BeautifulSoup(response.text, "html.parser")
     table = soup.find("table")
     if not table:
-        print("\u274c No table found on the page.")
-        return pd.DataFrame()
+        print("❌ No table found on the page.")
+        return pd.DataFrame()  # Error Handling: malformed HTML
 
+    # === B. Parse the Table Rows ===
     rows = table.find_all("tr")
     notices = []
 
-    for row in rows[1:]:
+    for row in rows[1:]:  # Skip header row
         cols = row.find_all("td")
         if len(cols) < 6:
-            continue
+            continue  # Error Handling: skip malformed row
 
+        # === C. Extract Basic Info from Row ===
         raw_type = cols[0].text.strip()
         notice_type = classify_notice_type(raw_type)
         date = cols[1].text.strip()
         number = cols[2].text.strip()
         subject = cols[5].text.strip()
 
+        # === D. Get the Full Notice Text from Detail Page ===
         link_tag = cols[5].find("a")
         link = base_url + link_tag['href'] if link_tag else None
 
@@ -144,12 +209,16 @@ def get_notices_df(limit=None):
                 else:
                     notice_text = detail_soup.get_text(separator="\n", strip=True)
 
-        gas_day, no_notice_pct, ofo_start, ofo_end, is_lifted, lifted_date_ref = extract_notice_insights(notice_text, notice_type, date)
+        # === E. Run the Modular Parser to Extract Key Fields ===
+        gas_day, no_notice_pct, ofo_start, ofo_end, is_lifted, lifted_date_ref, restrictions = extract_notice_insights(
+            notice_text, notice_type, date
+        )
 
-        # Optional debug log
-        if notice_type != "Other" and not any([gas_day, no_notice_pct, ofo_start, ofo_end]):
-            print(f"\u26a0\ufe0f Parsing failed: {subject}")
+        # === F. Optional Debug: Missing Restriction Data for Constraints ===
+        if notice_type == "Capacity Constraint" and not restrictions:
+            print(f"⚠️ No restrictions parsed: {subject}")
 
+        # === G. Construct the Final Parsed Notice Dictionary ===
         notices.append({
             "Type": notice_type,
             "Date": date,
@@ -163,11 +232,14 @@ def get_notices_df(limit=None):
             "OFO End": ofo_end,
             "OFO Lifted": is_lifted,
             "OFO Lift Ref Date": lifted_date_ref,
+            "Restrictions": restrictions  # ✅ NEW: this is our juicy data!
         })
 
+        # === H. Limit Control (Optional for Testing) ===
         if limit and len(notices) >= limit:
             break
 
+    # === I. Return Parsed Notices as DataFrame ===
     return pd.DataFrame(notices)
 
 # === 7. Read from DB ===
@@ -187,3 +259,14 @@ if __name__ == "__main__":
     initialize_db()
     for row in df.to_dict(orient='records'):
         store_notice(row)
+
+from db_utils import initialize_restriction_table, store_restrictions
+
+# Initialize both tables
+initialize_db()
+initialize_restriction_table()
+
+# Store notices + restrictions
+for row in df.to_dict(orient='records'):
+    store_notice(row)
+    store_restrictions(row["Notice Number"], row.get("Restrictions"))

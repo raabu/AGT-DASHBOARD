@@ -64,3 +64,35 @@ def store_notice(notice, db_path='notices.db'):
         print(f"⚠️ Duplicate: {notice.get('Subject', '')}")
     finally:
         conn.close()
+
+def initialize_restriction_table(db_path='notices.db'):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS restrictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notice_number TEXT,
+            location TEXT,
+            priority_restrictions TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def store_restrictions(notice_number, restrictions, db_path='notices.db'):
+    if not restrictions:
+        return  # skip empty
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    for item in restrictions:
+        location = item.get("location")
+        priorities = ", ".join(item.get("priority_restrictions", []))
+        cursor.execute("""
+            INSERT INTO restrictions (notice_number, location, priority_restrictions)
+            VALUES (?, ?, ?)
+        """, (notice_number, location, priorities))
+
+    conn.commit()
+    conn.close()
