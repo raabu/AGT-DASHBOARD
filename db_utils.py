@@ -73,26 +73,48 @@ def initialize_restriction_table(db_path='notices.db'):
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             notice_number TEXT,
             location TEXT,
-            priority_restrictions TEXT
+            Scheduled TEXT,
+            Sealed TEXT,
+            AO TEXT,
+            IT TEXT,
+            "3B" TEXT,
+            "3A" TEXT,
+            "2C" TEXT,
+            "2B" TEXT,
+            "2A" TEXT,
+            "1" TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def store_restrictions(notice_number, restrictions, db_path='notices.db'):
-    if not restrictions:
-        return  # skip empty
+def store_restrictions(notice_number, restriction_data, db_path="notices.db"):
+    if not restriction_data:
+        return
 
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    c = conn.cursor()
 
-    for item in restrictions:
-        location = item.get("location")
-        priorities = ", ".join(item.get("priority_restrictions", []))
-        cursor.execute("""
-            INSERT INTO restrictions (notice_number, location, priority_restrictions)
-            VALUES (?, ?, ?)
-        """, (notice_number, location, priorities))
+    for entry in restriction_data:
+        c.execute("""
+            INSERT INTO restrictions (
+                notice_number, location, Scheduled, Sealed, AO, IT,
+                "3B", "3A", "2C", "2B", "2A", "1"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            notice_number,
+            entry.get("location", ""),
+            entry.get("Scheduled", ""),
+            entry.get("Sealed", ""),
+            entry.get("AO", ""),
+            entry.get("IT", ""),
+            entry.get("3B", ""),
+            entry.get("3A", ""),
+            entry.get("2C", ""),
+            entry.get("2B", ""),
+            entry.get("2A", ""),
+            entry.get("1", "")
+        ))
 
     conn.commit()
     conn.close()

@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import re
 import sqlite3
-from db_utils import initialize_db, store_notice
+from db_utils import initialize_db, store_notice, store_restrictions, initialize_restriction_table
 
 # === 2. Constants ===
 base_url = "https://infopost.enbridge.com/infopost/"
@@ -26,95 +26,163 @@ def classify_notice_type(raw_type):
         return "Operational Flow Order"
     else:
         return "Other"
+    
+def classify_line_type(line):
+        line = line.strip()
+        if not line or line.lower().startswith("no-notice") or "ferc" in line.lower() or "systemwide" in line.lower():
+            return "SEPARATOR"
+        if re.match(r"^restricted locations\s+", line.lower()):
+            return "HEADER"
+        if re.match(r"^(yes|no)$", line.lower()):
+            return "SCHEDULED_ROW"
+        if re.match(r"^(\(?\d+%[,\s]*)+$", line):
+            return "PERCENT_ROW"
+        if re.match(r"^[A-Za-z].*", line):  # Starts with a word character
+            return "LOCATION_ROW"
+        return "UNKNOWN"
 
-# === 4. Parsing Dispatcher ===
-def extract_notice_insights(text, notice_type, notice_date=None):
-    if not text:
-        # Always return 7 values, even if text is missing
-        return None, None, None, None, False, None, []
+def extract_restriction_block(text):
+    """
+    Extracts lines starting from 'Restricted Locations' up to (but not including) 'No-Notice Restrictions'.
+    """
+    lines = text.splitlines()
+    start_index = None
+    end_index = None
 
-    notice_type = notice_type.lower()
+    for i, line in enumerate(lines):
+        lower = line.lower()
+        if "restricted locations" in lower and start_index is None:
+            start_index = i
+        elif start_index is not None and "no-notice restrictions" in lower:
+            end_index = i
+            break
 
-    if "operational flow order" in notice_type or "ofo" in notice_type:
-        # Return the normal 6 OFO values, plus an empty list for restrictions
-        return (*parse_ofo_notice(text, notice_date), [])
+    if start_index is not None:
+        return lines[start_index:end_index] if end_index else lines[start_index:]
+    return lines
 
-    elif "capacity constraint" in notice_type:
-        # This now returns all 7 values including restriction_data
-        return parse_capacity_notice(text)
-
-    else:
-        # Unknown notice type — return 7 values of safe defaults
-        return None, None, None, None, False, None, []
-
-# === 5. Notice Type Parsers ===
 def parse_capacity_notice(text):
     """
-    Parses Capacity Constraint notices for Gas Day, No-Notice %, and Restrictions.
+    Parses Capacity Constraint notices for Gas Day, No-Notice %, and embedded restriction table.
     """
     gas_day = None
     no_notice_pct = None
 
-    # Extract gas day
+    # Extract Gas Day
     gas_day_match = re.search(r"For Gas Day (.+?)(?:,|\n)", text)
     if gas_day_match:
         gas_day = gas_day_match.group(1).strip()
 
-    # Extract no-notice %
-    no_notice_match = re.search(
-        r"limited to approximately (\d+%) of their no-notice", text)
+    # Extract No-Notice %
+    no_notice_match = re.search(r"limited to approximately (\d+%) of their no-notice", text)
     if no_notice_match:
-        no_notice_pct = no_notice_match.group(1)
+        no_notice_pct = no_notice_match.group(1).strip()
 
-    # NEW: Parse the restrictions table
-    restriction_data = parse_restriction_table(text)
+    # Extract the restriction table using your new modular function
+    restrictions = extract_restriction_block(text)
 
-    return gas_day, no_notice_pct, None, None, False, None, restriction_data
 
-def parse_restriction_table(text):
+    return gas_day, no_notice_pct, None, None, False, None, restrictions
+
+
+# === 4. Parsing Dispatcher ===
+from typing import Optional, List, Tuple, Dict
+
+def extract_notice_insights(
+    text: str,
+    notice_type: str,
+    notice_date: Optional[str] = None
+) -> Tuple[
+    Optional[str],  # gas_day
+    Optional[str],  # no_notice_pct
+    Optional[str],  # ofo_start
+    Optional[str],  # ofo_end
+    bool,           # is_lifted
+    Optional[str],  # lift_ref_date
+    List[Dict]      # restrictions
+]:
+    """
+    Parses a pipeline notice and returns key operational fields.
+
+    Parameters:
+        text (str): The full text of the notice.
+        notice_type (str): The classified type of the notice (e.g., "Capacity Constraint").
+        notice_date (Optional[str]): The date associated with the notice, used for context.
+
+    Returns:
+        Tuple containing:
+            - gas_day (Optional[str]): The date(s) the notice applies to.
+            - no_notice_pct (Optional[str]): The percentage of no-notice capacity allowed.
+            - ofo_start (Optional[str]): Start time of any Operational Flow Order.
+            - ofo_end (Optional[str]): End time of any Operational Flow Order.
+            - is_lifted (bool): Whether the OFO was lifted.
+            - lift_ref_date (Optional[str]): Reference date the OFO was lifted.
+            - restrictions (List[Dict]): Structured restrictions, if available (locations, %s).
+    """
+
+    # === A. Basic Guard Clause ===
+    if not text:
+        return None, None, None, None, False, None, []
+
+    # === B. Normalize Notice Type ===
+    notice_type = notice_type.lower()
+
+    # === C. Dispatch Based on Type ===
+    if "operational flow order" in notice_type or "ofo" in notice_type:
+        # Parse OFO-specific details, append empty restrictions list
+        return (*parse_ofo_notice(text, notice_date), [])
+
+    elif "capacity constraint" in notice_type:
+        # This function is defined separately
+        return parse_capacity_notice(text)
+
+    # === D. Unknown or Unsupported Notice Type ===
+    return None, None, None, None, False, None, []
+
+# === 5. Notice Type Parsers ===
+
+
+def parse_restriction_table(lines):
     """
     Parses the 'Restricted Locations' table from Capacity Constraint notices.
-    Returns a list of dictionaries, each containing a location and any extracted priority restrictions.
+    Returns a list of dictionaries with location, scheduled status, and priority restriction values.
     """
-    # Start by finding the table header section
-    header_pattern = r"Restricted Locations\s+Scheduled and Sealed\s+Priority % Restricted\s+Notes"
-    match = re.search(header_pattern, text, re.IGNORECASE)
-
-    if not match:
-        return None  # No table found
-
-    lines = text[match.end():].strip().splitlines()
-
     restrictions = []
+
     current_location = None
-    priorities = []
+    current_scheduled = None
+    current_priorities = []
 
     for line in lines:
         line = line.strip()
+        kind = classify_line_type(line)  # Use your global helper
 
-        # End of the table is usually marked by a blank line or switch in topic
-        if not line or line.startswith("No-Notice Restrictions") or "FERC" in line or "Systemwide" in line:
+        if kind == "SEPARATOR":
             break
 
-        # If line looks like a location row (starts with letters, not %s or numbers)
-        if re.match(r"^[A-Za-z].*", line):
+        if kind == "LOCATION_ROW":
             if current_location:
                 restrictions.append({
                     "location": current_location,
-                    "priority_restrictions": priorities
+                    "scheduled": current_scheduled,
+                    "priorities": current_priorities
                 })
             current_location = line
-            priorities = []
-        else:
-            # Assume it's a priority % value or a continuation
-            if "%" in line:
-                priorities.append(line)
+            current_scheduled = None
+            current_priorities = []
 
-    # Final push for last row
+        elif kind == "SCHEDULED_ROW":
+            current_scheduled = line
+
+        elif kind == "PERCENT_ROW":
+            percents = [val.strip() for val in re.split(r"[, ]+", line) if val.strip()]
+            current_priorities.extend(percents)
+
     if current_location:
         restrictions.append({
             "location": current_location,
-            "priority_restrictions": priorities
+            "scheduled": current_scheduled,
+            "priorities": current_priorities
         })
 
     return restrictions if restrictions else None
@@ -249,24 +317,13 @@ def get_notices_from_db(db_path='notices.db'):
     conn.close()
     return df
 
-# === 8. Main Execution Block ===
 if __name__ == "__main__":
     df = get_notices_df()
     pd.set_option('display.max_colwidth', None)
-    print("\n\u2705 Final Parsed Output:")
+    print("\n✅ Final Parsed Output:")
     print(df.head())
-
+    initialize_restriction_table()
     initialize_db()
-    for row in df.to_dict(orient='records'):
+
+    for row in df.to_dict(orient="records"):
         store_notice(row)
-
-from db_utils import initialize_restriction_table, store_restrictions
-
-# Initialize both tables
-initialize_db()
-initialize_restriction_table()
-
-# Store notices + restrictions
-for row in df.to_dict(orient='records'):
-    store_notice(row)
-    store_restrictions(row["Notice Number"], row.get("Restrictions"))
